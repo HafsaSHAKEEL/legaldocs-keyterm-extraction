@@ -2,6 +2,8 @@ import os
 import re
 import logging
 import yake
+from transformers import AutoTokenizer, AutoModelForTokenClassification
+from transformers import pipeline
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -21,6 +23,8 @@ class TermExtractionHandler:
             results_directory (str): The directory to save the term extraction results.
         """
         self.results_directory = results_directory
+        self.ner_model = None
+        self.tokenizer = None
 
     def load_text_files(self, directory):
         """
@@ -36,7 +40,7 @@ class TermExtractionHandler:
         for filename in os.listdir(directory):
             if filename.endswith("_text.txt"):
                 with open(
-                    os.path.join(directory, filename), "r", encoding="utf-8"
+                        os.path.join(directory, filename), "r", encoding="utf-8"
                 ) as file:
                     texts[filename] = file.read()
         return texts
@@ -55,9 +59,9 @@ class TermExtractionHandler:
         for filename in os.listdir(ground_truth_directory):
             if filename.endswith("_terms.txt"):
                 with open(
-                    os.path.join(ground_truth_directory, filename),
-                    "r",
-                    encoding="utf-8",
+                        os.path.join(ground_truth_directory, filename),
+                        "r",
+                        encoding="utf-8",
                 ) as file:
                     content = file.read()
                     for line in content.splitlines():
@@ -66,9 +70,17 @@ class TermExtractionHandler:
                             terms.add(term)
         return terms
 
+    def load_ner_model(self):
+        """
+        Load a pre-trained NER model.
+        """
+        self.tokenizer = AutoTokenizer.from_pretrained("dbmdz/bert-large-cased-finetuned-conll03-english")
+        self.ner_model = AutoModelForTokenClassification.from_pretrained(
+            "dbmdz/bert-large-cased-finetuned-conll03-english")
+
     def extract_key_terms(self, text, max_terms=150):
         """
-        Extract key terms from text using YAKE.
+        Extract key terms from text using YAKE and a pre-trained NER model.
 
         Args:
             text (str): The text to extract terms from.
@@ -77,6 +89,7 @@ class TermExtractionHandler:
         Returns:
             set: A set of extracted key terms.
         """
+        # Extract using YAKE
         kw_extractor_unigrams = yake.KeywordExtractor(
             lan="en", n=1, dedupLim=0.9, top=max_terms // 2
         )
@@ -89,8 +102,17 @@ class TermExtractionHandler:
 
         keywords = keywords_unigrams + keywords_bigrams
 
-        extracted_terms = set(kw.lower() for kw, _ in keywords)  # Remove duplicates
-        return extracted_terms
+        yake_terms = set(kw.lower() for kw, _ in keywords)  # Remove duplicates
+
+        # Extract using NER
+        ner_pipeline = pipeline("ner", model=self.ner_model, tokenizer=self.tokenizer, aggregation_strategy="simple")
+        ner_results = ner_pipeline(text)
+
+        ner_terms = set()
+        for result in ner_results:
+            ner_terms.add(result['word'].lower())
+
+        return yake_terms.union(ner_terms)
 
     def ensure_critical_terms(self, extracted_terms, text):
         """
@@ -175,7 +197,7 @@ class TermExtractionHandler:
                         "\n", " "
                     )  # More context from section
                     if (
-                        section_context not in term_section_map[term]
+                            section_context not in term_section_map[term]
                     ):  # Ensure unique sections
                         term_section_map[term].append(
                             section_context
@@ -186,7 +208,7 @@ class TermExtractionHandler:
         }
 
     def save_term_extraction_results(
-        self, output_directory, filename, terms, term_section_map
+            self, output_directory, filename, terms, term_section_map
     ):
         """
         Save the extracted key terms and their mapped sections to a file.
@@ -222,6 +244,7 @@ class TermExtractionHandler:
             ground_truth_terms (set): The set of ground truth terms.
         """
         texts = self.load_text_files(text_directory)
+        self.load_ner_model()
         for filename, text in texts.items():
             logging.info(f"Processing file: {filename}")
             extracted_terms = self.extract_key_terms(text)
